@@ -619,7 +619,6 @@ public final class TomorrowYouManager {
 		lines.add(Component.literal("Ты уже был здесь.").withStyle(ChatFormatting.LIGHT_PURPLE));
 		if (gotCompass) {
 			lines.add(Component.literal("Эхо оставило тебе ориентир.").withStyle(ChatFormatting.GRAY));
-			lines.add(Component.literal("Цена: " + config.compassRequiredLevels + " уровней.").withStyle(ChatFormatting.DARK_GRAY));
 			lines.add(Component.literal("Стрелка ведет себя странно и непредсказуемо.").withStyle(ChatFormatting.DARK_GRAY));
 		} else if (!enoughLevels) {
 			lines.add(Component.literal("Недостаточно уровней: нужно " + config.compassRequiredLevels + ".").withStyle(ChatFormatting.GRAY));
