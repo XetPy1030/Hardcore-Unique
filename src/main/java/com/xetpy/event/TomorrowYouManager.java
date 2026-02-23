@@ -177,7 +177,7 @@ public final class TomorrowYouManager {
 		event.targetY = target.getY();
 		event.targetZ = target.getZ();
 		event.createdAt = world.getGameTime();
-		event.createdDay = world.getGameTime() / 24000L;
+		event.createdDay = getWorldDay(world);
 		event.firstVisitDone = false;
 		event.tomorrowBranchResolved = false;
 		event.resolvedOutcome = "pending";
@@ -294,7 +294,7 @@ public final class TomorrowYouManager {
 	}
 
 	private void handleTomorrowVisit(ServerPlayer player, TomorrowYouState.PlayerTimelineData data, TomorrowYouState.ActiveEvent event, BlockPos targetPos) {
-		long currentDay = player.level().getGameTime() / 24000L;
+		long currentDay = getWorldDay(player.level());
 		if (currentDay < event.createdDay + 1) {
 			return;
 		}
@@ -534,7 +534,7 @@ public final class TomorrowYouManager {
 		record.y = event.targetY;
 		record.z = event.targetZ;
 		record.createdDay = event.createdDay;
-		record.resolvedDay = player.level().getGameTime() / 24000L;
+		record.resolvedDay = getWorldDay(player.level());
 		record.outcome = outcome;
 		record.gotCompass = gotCompass;
 		state.addHistory(player.getUUID(), record);
@@ -631,6 +631,10 @@ public final class TomorrowYouManager {
 
 	private boolean isCompassLike(Item item) {
 		return item == Items.COMPASS || item == Items.RECOVERY_COMPASS;
+	}
+
+	private long getWorldDay(ServerLevel world) {
+		return world.getDayTime() / 24000L;
 	}
 
 	private void giveOrDrop(ServerPlayer player, ItemStack stack) {
