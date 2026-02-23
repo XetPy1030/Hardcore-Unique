@@ -6,6 +6,7 @@ import com.xetpy.state.TomorrowYouState;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.particles.ParticleTypes;
@@ -20,6 +21,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityType;
@@ -30,6 +33,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.ItemLore;
+import net.minecraft.world.item.component.LodestoneTracker;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
@@ -51,6 +55,13 @@ public final class TomorrowYouManager {
 	private static final String TAG_ISSUED_AT_GAME_TIME = "issuedAtGameTime";
 	private static final String TAG_ISSUED_AT_DAY = "issuedAtDay";
 	private static final String TAG_ARTIFACT_ID = "artifactId";
+	private static final String TAG_COMPASS_MODE = "compassMode";
+	private static final String TAG_CALIBRATE_AT = "calibrateAtGameTime";
+	private static final String TAG_LAST_CHAOS_UPDATE = "lastChaosUpdateGameTime";
+	private static final String TAG_TARGET_WORLD = "targetWorld";
+	private static final String TAG_TARGET_X = "targetX";
+	private static final String TAG_TARGET_Y = "targetY";
+	private static final String TAG_TARGET_Z = "targetZ";
 
 	private final TomorrowYouConfig config;
 	private final TomorrowYouState state;
@@ -73,6 +84,7 @@ public final class TomorrowYouManager {
 		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
 			handleWakeTrigger(player);
 			handleActiveEvent(player);
+			tickOwnedCompass(player);
 		}
 	}
 
@@ -199,6 +211,10 @@ public final class TomorrowYouManager {
 			finalizeEncounter(player, data, event, "player_died", false);
 			return;
 		}
+		if (player.experienceLevel <= 0) {
+			finalizeEncounter(player, data, event, "no_levels_escape", false);
+			return;
+		}
 
 		Identifier worldId = Identifier.tryParse(event.worldKey);
 		MinecraftServer server = player.level().getServer();
@@ -279,12 +295,6 @@ public final class TomorrowYouManager {
 
 	private void handleTomorrowVisit(ServerPlayer player, TomorrowYouState.PlayerTimelineData data, TomorrowYouState.ActiveEvent event, BlockPos targetPos) {
 		long currentDay = player.level().getGameTime() / 24000L;
-
-		HardcoreUnique.LOGGER.info(
-				"[TomorrowYou] game tick tick={}",
-				player.level().getGameTime()
-		);
-
 		if (currentDay < event.createdDay + 1) {
 			return;
 		}
@@ -311,6 +321,11 @@ public final class TomorrowYouManager {
 				player.giveExperienceLevels(-levelLoss);
 				playForPlayer(player, SoundEvents.PLAYER_HURT_DROWN, 0.8F, 1.0F);
 			}
+			player.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, 80, 0, false, true, true));
+			player.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, 80, 0, false, true, true));
+			if (player.level().random.nextFloat() < 0.45F) {
+				player.addEffect(new MobEffectInstance(MobEffects.NAUSEA, 80, 0, false, true, true));
+			}
 			tomorrowXpPulseCooldowns.put(player.getUUID(), config.tomorrowXpPulseTicks);
 		} else {
 			tomorrowXpPulseCooldowns.put(player.getUUID(), pulseCooldown - 1);
@@ -320,12 +335,19 @@ public final class TomorrowYouManager {
 			return;
 		}
 
-		boolean gotCompass = player.level().random.nextDouble() <= config.compassRewardChance;
+		boolean chancePassed = player.level().random.nextDouble() <= config.compassRewardChance;
+		boolean enoughLevels = player.experienceLevel >= config.compassRequiredLevels;
+		boolean gotCompass = chancePassed && enoughLevels;
 		if (gotCompass) {
+			if (config.compassRequiredLevels > 0) {
+				player.giveExperienceLevels(-config.compassRequiredLevels);
+			}
 			grantCompassArtifact(player, event, currentDay);
+		} else {
+			playForPlayer(player, SoundEvents.PLAYER_HURT_DROWN, 0.7F, 0.8F);
 		}
 
-		giveOrDrop(player, createAlreadyHereNote(gotCompass));
+		giveOrDrop(player, createAlreadyHereNote(gotCompass, enoughLevels));
 		playForPlayer(player, SoundEvents.ENDERMAN_TELEPORT, 1.0F, 0.9F);
 		finalizeEncounter(player, data, event, gotCompass ? "tomorrow_branch_compass" : "tomorrow_branch_no_compass", gotCompass);
 	}
@@ -380,14 +402,20 @@ public final class TomorrowYouManager {
 		tag.putLong(TAG_ISSUED_AT_GAME_TIME, player.level().getGameTime());
 		tag.putLong(TAG_ISSUED_AT_DAY, issuedAtDay);
 		tag.putString(TAG_ARTIFACT_ID, previousArtifactId.isEmpty() ? UUID.randomUUID().toString() : previousArtifactId);
+		tag.putString(TAG_COMPASS_MODE, "chaotic");
+		long calibrateAt = config.compassUnstableTicks < 0
+			? Long.MAX_VALUE
+			: player.level().getGameTime() + config.compassUnstableTicks;
+		tag.putLong(TAG_CALIBRATE_AT, calibrateAt);
+		tag.putLong(TAG_LAST_CHAOS_UPDATE, Long.MIN_VALUE);
+		tag.putString(TAG_TARGET_WORLD, event.worldKey);
+		tag.putInt(TAG_TARGET_X, event.targetX);
+		tag.putInt(TAG_TARGET_Y, event.targetY);
+		tag.putInt(TAG_TARGET_Z, event.targetZ);
 		compass.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
 
 		compass.set(DataComponents.CUSTOM_NAME, Component.literal(COMPASS_TITLE).withStyle(ChatFormatting.AQUA));
-		List<Component> lore = new ArrayList<>();
-		lore.add(Component.literal("Владелец: " + player.getName().getString()).withStyle(ChatFormatting.GRAY));
-		lore.add(Component.literal("День выдачи: " + issuedAtDay).withStyle(ChatFormatting.DARK_GRAY));
-		lore.add(Component.literal("Точка эха: " + event.targetX + " " + event.targetY + " " + event.targetZ).withStyle(ChatFormatting.DARK_GRAY));
-		compass.set(DataComponents.LORE, new ItemLore(lore));
+		updateCompassLore(compass, player.getName().getString(), issuedAtDay, new BlockPos(event.targetX, event.targetY, event.targetZ), false);
 	}
 
 	private ItemStack findOwnedCompass(ServerPlayer player) {
@@ -404,7 +432,7 @@ public final class TomorrowYouManager {
 	}
 
 	private boolean isOwnedCompass(ItemStack stack, String ownerUuid) {
-		if (stack.isEmpty() || stack.getItem() != Items.COMPASS) {
+		if (stack.isEmpty() || !isCompassLike(stack.getItem())) {
 			return false;
 		}
 
@@ -414,6 +442,86 @@ public final class TomorrowYouManager {
 		}
 		CompoundTag tag = customData.copyTag();
 		return tag.getBooleanOr(TAG_UNIQUE, false) && ownerUuid.equals(tag.getStringOr(TAG_OWNER_UUID, ""));
+	}
+
+	private void tickOwnedCompass(ServerPlayer player) {
+		ItemStack compass = findOwnedCompass(player);
+		if (compass.isEmpty()) {
+			return;
+		}
+
+		CustomData customData = compass.get(DataComponents.CUSTOM_DATA);
+		if (customData == null) {
+			return;
+		}
+		CompoundTag tag = customData.copyTag();
+
+		String mode = tag.getStringOr(TAG_COMPASS_MODE, "chaotic");
+		if ("calibrated".equals(mode)) {
+			return;
+		}
+
+		long gameTime = player.level().getGameTime();
+		long calibrateAt = tag.getLongOr(TAG_CALIBRATE_AT, Long.MAX_VALUE);
+
+		if (gameTime >= calibrateAt) {
+			Identifier targetWorldId = Identifier.tryParse(tag.getStringOr(TAG_TARGET_WORLD, player.level().dimension().identifier().toString()));
+			if (targetWorldId == null) {
+				return;
+			}
+
+			ResourceKey<Level> targetWorld = ResourceKey.create(Registries.DIMENSION, targetWorldId);
+			BlockPos targetPos = new BlockPos(
+				tag.getIntOr(TAG_TARGET_X, player.blockPosition().getX()),
+				tag.getIntOr(TAG_TARGET_Y, player.blockPosition().getY()),
+				tag.getIntOr(TAG_TARGET_Z, player.blockPosition().getZ())
+			);
+			setCompassTarget(compass, targetWorld, targetPos, false);
+			tag.putString(TAG_COMPASS_MODE, "calibrated");
+			compass.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+
+			updateCompassLore(
+				compass,
+				tag.getStringOr(TAG_OWNER_NAME, player.getName().getString()),
+				tag.getLongOr(TAG_ISSUED_AT_DAY, gameTime / 24000L),
+				targetPos,
+				true
+			);
+			playForPlayer(player, SoundEvents.EXPERIENCE_ORB_PICKUP, 0.85F, 1.15F);
+			return;
+		}
+
+		long lastChaosUpdate = tag.getLongOr(TAG_LAST_CHAOS_UPDATE, Long.MIN_VALUE);
+		if (lastChaosUpdate != Long.MIN_VALUE && gameTime - lastChaosUpdate < config.compassChaosUpdateTicks) {
+			return;
+		}
+
+		int dx = player.level().random.nextInt(129) - 64;
+		int dz = player.level().random.nextInt(129) - 64;
+		int y = Math.max(player.level().getMinY(), Math.min(player.level().getMaxY(), player.blockPosition().getY()));
+		BlockPos randomTarget = new BlockPos(player.blockPosition().getX() + dx, y, player.blockPosition().getZ() + dz);
+		setCompassTarget(compass, player.level().dimension(), randomTarget, false);
+		tag.putLong(TAG_LAST_CHAOS_UPDATE, gameTime);
+		compass.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+	}
+
+	private void setCompassTarget(ItemStack compass, ResourceKey<Level> dimension, BlockPos pos, boolean tracked) {
+		compass.set(DataComponents.LODESTONE_TRACKER, new LodestoneTracker(Optional.of(GlobalPos.of(dimension, pos)), tracked));
+	}
+
+	private void updateCompassLore(ItemStack compass, String ownerName, long issuedAtDay, BlockPos target, boolean calibrated) {
+		List<Component> lore = new ArrayList<>();
+		lore.add(Component.literal("Владелец: " + ownerName).withStyle(ChatFormatting.GRAY));
+		lore.add(Component.literal("День выдачи: " + issuedAtDay).withStyle(ChatFormatting.DARK_GRAY));
+		lore.add(Component.literal("Точка эха: " + target.getX() + " " + target.getY() + " " + target.getZ()).withStyle(ChatFormatting.DARK_GRAY));
+		lore.add(
+			Component.literal(
+				calibrated
+					? "Состояние: откалиброван, ведет к цели."
+					: "Состояние: нестабилен."
+			).withStyle(ChatFormatting.DARK_PURPLE)
+		);
+		compass.set(DataComponents.LORE, new ItemLore(lore));
 	}
 
 	private void finalizeEncounter(ServerPlayer player, TomorrowYouState.PlayerTimelineData data, TomorrowYouState.ActiveEvent event, String outcome, boolean gotCompass) {
@@ -438,7 +546,16 @@ public final class TomorrowYouManager {
 		presenceSoundCooldowns.remove(player.getUUID());
 		tomorrowProgressTicks.remove(player.getUUID());
 		tomorrowXpPulseCooldowns.remove(player.getUUID());
+		discardEchoIfPresent(player.level(), event);
 		state.save();
+	}
+
+	private void discardEchoIfPresent(ServerLevel world, TomorrowYouState.ActiveEvent event) {
+		ArmorStand echo = findEcho(world, event.echoEntityUuid);
+		if (echo != null) {
+			echo.discard();
+		}
+		event.echoEntityUuid = null;
 	}
 
 	private ArmorStand findEcho(ServerLevel world, UUID uuid) {
@@ -495,18 +612,26 @@ public final class TomorrowYouManager {
 		return stack;
 	}
 
-	private ItemStack createAlreadyHereNote(boolean gotCompass) {
+	private ItemStack createAlreadyHereNote(boolean gotCompass, boolean enoughLevels) {
 		ItemStack stack = new ItemStack(Items.PAPER);
 		stack.set(DataComponents.CUSTOM_NAME, Component.literal(NOTE_TITLE).withStyle(ChatFormatting.DARK_PURPLE));
 		List<Component> lines = new ArrayList<>();
 		lines.add(Component.literal("Ты уже был здесь.").withStyle(ChatFormatting.LIGHT_PURPLE));
 		if (gotCompass) {
 			lines.add(Component.literal("Эхо оставило тебе ориентир.").withStyle(ChatFormatting.GRAY));
+			lines.add(Component.literal("Цена: " + config.compassRequiredLevels + " уровней.").withStyle(ChatFormatting.DARK_GRAY));
+			lines.add(Component.literal("Стрелка ведет себя странно и непредсказуемо.").withStyle(ChatFormatting.DARK_GRAY));
+		} else if (!enoughLevels) {
+			lines.add(Component.literal("Недостаточно уровней: нужно " + config.compassRequiredLevels + ".").withStyle(ChatFormatting.GRAY));
 		} else {
 			lines.add(Component.literal("В этот раз эхо взяло больше, чем отдало.").withStyle(ChatFormatting.GRAY));
 		}
 		stack.set(DataComponents.LORE, new ItemLore(lines));
 		return stack;
+	}
+
+	private boolean isCompassLike(Item item) {
+		return item == Items.COMPASS || item == Items.RECOVERY_COMPASS;
 	}
 
 	private void giveOrDrop(ServerPlayer player, ItemStack stack) {

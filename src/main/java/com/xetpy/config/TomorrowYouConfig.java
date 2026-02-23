@@ -18,7 +18,7 @@ public final class TomorrowYouConfig {
 
 	public double wakeEventChance = 0.25D;
 	public int targetMinDistance = 80;
-	public int targetMaxDistance = 220;
+	public int targetMaxDistance = 400;
 	public int spawnRadius = 24;
 	public int vanishRadius = 3;
 	public int attackRadius = 12;
@@ -28,6 +28,9 @@ public final class TomorrowYouConfig {
 	public int tomorrowBranchDurationTicks = 120;
 	public int tomorrowXpPulseTicks = 20;
 	public int tomorrowXpDrainPerPulse = 1;
+	public int compassRequiredLevels = 10;
+	public int compassUnstableTicks = -1;
+	public int compassChaosUpdateTicks = 20;
 	public double compassRewardChance = 1.0D;
 	public boolean updateExistingCompass = true;
 	public boolean debugVerboseLogs = false;
@@ -79,6 +82,11 @@ public final class TomorrowYouConfig {
 		tomorrowBranchDurationTicks = Math.max(40, tomorrowBranchDurationTicks);
 		tomorrowXpPulseTicks = Math.max(5, tomorrowXpPulseTicks);
 		tomorrowXpDrainPerPulse = Math.max(1, tomorrowXpDrainPerPulse);
+		compassRequiredLevels = Math.max(0, compassRequiredLevels);
+		if (compassUnstableTicks != -1) {
+			compassUnstableTicks = Math.max(40, compassUnstableTicks);
+		}
+		compassChaosUpdateTicks = Math.max(1, compassChaosUpdateTicks);
 		compassRewardChance = clamp(compassRewardChance, 0.0D, 1.0D);
 		maxEncountersPerPlayer = Math.max(1, maxEncountersPerPlayer);
 		cooldownMinutes = Math.max(1, cooldownMinutes);
