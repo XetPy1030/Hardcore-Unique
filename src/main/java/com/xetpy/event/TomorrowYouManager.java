@@ -286,6 +286,7 @@ public final class TomorrowYouManager {
 					playForPlayer(player, SoundEvents.PLAYER_HURT_DROWN, 1.0F, 1.2F);
 					playForPlayer(player, SoundEvents.WARDEN_HEARTBEAT, 1.0F, 0.65F);
 				}
+				applyNegativeEffects(player, true);
 				attackCooldowns.put(player.getUUID(), config.attackCooldownTicks);
 			} else {
 				attackCooldowns.put(player.getUUID(), cooldown - 1);
@@ -321,11 +322,7 @@ public final class TomorrowYouManager {
 				player.giveExperienceLevels(-levelLoss);
 				playForPlayer(player, SoundEvents.PLAYER_HURT_DROWN, 0.8F, 1.0F);
 			}
-			player.addEffect(new MobEffectInstance(MobEffects.SLOWNESS, 80, 0, false, true, true));
-			player.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, 80, 0, false, true, true));
-			if (player.level().random.nextFloat() < 0.45F) {
-				player.addEffect(new MobEffectInstance(MobEffects.NAUSEA, 80, 0, false, true, true));
-			}
+			applyNegativeEffects(player, false);
 			tomorrowXpPulseCooldowns.put(player.getUUID(), config.tomorrowXpPulseTicks);
 		} else {
 			tomorrowXpPulseCooldowns.put(player.getUUID(), pulseCooldown - 1);
@@ -635,6 +632,20 @@ public final class TomorrowYouManager {
 
 	private long getWorldDay(ServerLevel world) {
 		return world.getDayTime() / 24000L;
+	}
+
+	private void applyNegativeEffects(ServerPlayer player, boolean light) {
+		int duration = light ? 100 : 160;
+		int slownessAmp = light ? 1 : 4;
+		int weaknessAmp = light ? 1 : 4;
+
+		player.forceAddEffect(new MobEffectInstance(MobEffects.SLOWNESS, duration, slownessAmp, false, true, true), player);
+		player.forceAddEffect(new MobEffectInstance(MobEffects.WEAKNESS, duration, weaknessAmp, false, true, true), player);
+
+		float nauseaChance = light ? 0.25F : 0.65F;
+		if (player.level().random.nextFloat() < nauseaChance) {
+			player.forceAddEffect(new MobEffectInstance(MobEffects.NAUSEA, duration, 1, false, true, true), player);
+		}
 	}
 
 	private void giveOrDrop(ServerPlayer player, ItemStack stack) {
