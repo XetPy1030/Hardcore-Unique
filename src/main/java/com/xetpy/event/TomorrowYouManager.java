@@ -11,6 +11,7 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
@@ -18,14 +19,16 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
-import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.component.ItemLore;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -39,13 +42,23 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class TomorrowYouManager {
-	private static final List<String> ENDING_LINES = List.of("Не ходи сюда завтра.", "Ты уже был здесь.");
+	private static final String NOTE_TITLE = "Странная записка";
+	private static final String COMPASS_TITLE = "Компас эха";
+
+	private static final String TAG_UNIQUE = "tomorrowYouUnique";
+	private static final String TAG_OWNER_UUID = "ownerUuid";
+	private static final String TAG_OWNER_NAME = "ownerName";
+	private static final String TAG_ISSUED_AT_GAME_TIME = "issuedAtGameTime";
+	private static final String TAG_ISSUED_AT_DAY = "issuedAtDay";
+	private static final String TAG_ARTIFACT_ID = "artifactId";
 
 	private final TomorrowYouConfig config;
 	private final TomorrowYouState state;
 	private final Map<UUID, Boolean> sleepingCache = new HashMap<>();
 	private final Map<UUID, Integer> attackCooldowns = new HashMap<>();
 	private final Map<UUID, Integer> presenceSoundCooldowns = new HashMap<>();
+	private final Map<UUID, Integer> tomorrowProgressTicks = new HashMap<>();
+	private final Map<UUID, Integer> tomorrowXpPulseCooldowns = new HashMap<>();
 
 	public TomorrowYouManager(TomorrowYouConfig config) {
 		this.config = config;
@@ -67,23 +80,62 @@ public final class TomorrowYouManager {
 		boolean isSleeping = player.isSleeping();
 		boolean wasSleeping = sleepingCache.getOrDefault(player.getUUID(), false);
 		sleepingCache.put(player.getUUID(), isSleeping);
-		if (isSleeping || !wasSleeping) {
+		if (config.debugVerboseLogs) {
+			HardcoreUnique.LOGGER.info(
+				"[TomorrowYou] wake check player={}, isSleeping={}, wasSleeping={}, debugForceEvent={}",
+				player.getName().getString(),
+				isSleeping,
+				wasSleeping,
+				config.debugForceEvent
+			);
+		}
+
+		// In normal mode event can only start right after waking up.
+		// In debugForceEvent mode we allow triggering while awake for easier debugging.
+		if (isSleeping || (!config.debugForceEvent && !wasSleeping)) {
+			if (config.debugVerboseLogs) {
+				HardcoreUnique.LOGGER.info("[TomorrowYou] skip: not a wake transition");
+			}
 			return;
 		}
 
 		ServerLevel world = player.level();
 		TomorrowYouState.PlayerTimelineData data = state.getOrCreatePlayerData(player.getUUID());
 		if (data.activeEvent != null || data.completedEncounters >= config.maxEncountersPerPlayer) {
+			if (config.debugVerboseLogs) {
+				HardcoreUnique.LOGGER.info(
+					"[TomorrowYou] skip: activeEvent={}, completed={}, max={}",
+					data.activeEvent != null,
+					data.completedEncounters,
+					config.maxEncountersPerPlayer
+				);
+			}
 			return;
 		}
 
 		long gameTime = world.getGameTime();
 		long cooldownTicks = config.cooldownMinutes * 60L * 20L;
 		if (!config.debugForceEvent && data.lastTriggerGameTime != Long.MIN_VALUE && gameTime - data.lastTriggerGameTime < cooldownTicks) {
+			if (config.debugVerboseLogs) {
+				HardcoreUnique.LOGGER.info(
+					"[TomorrowYou] skip: cooldown active, elapsed={}, required={}",
+					gameTime - data.lastTriggerGameTime,
+					cooldownTicks
+				);
+			}
 			return;
 		}
 
-		boolean passChance = config.debugForceEvent || world.random.nextDouble() <= config.wakeEventChance;
+		double roll = world.random.nextDouble();
+		boolean passChance = config.debugForceEvent || roll <= config.wakeEventChance;
+		if (config.debugVerboseLogs) {
+			HardcoreUnique.LOGGER.info(
+				"[TomorrowYou] chance check: roll={}, chance={}, pass={}",
+				roll,
+				config.wakeEventChance,
+				passChance
+			);
+		}
 		if (!passChance) {
 			return;
 		}
@@ -92,9 +144,16 @@ public final class TomorrowYouManager {
 		data.activeEvent = event;
 		data.lastTriggerGameTime = gameTime;
 		state.save();
+
 		giveOrDrop(player, createCoordinatesNote(event.targetX, event.targetY, event.targetZ));
-		player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.6F, 0.55F);
-		HardcoreUnique.LOGGER.info("Triggered TomorrowYou event for {}", player.getName().getString());
+		playForPlayer(player, SoundEvents.EXPERIENCE_ORB_PICKUP, 0.9F, 0.7F);
+		HardcoreUnique.LOGGER.info(
+			"Triggered TomorrowYou event for {} at {} {} {}",
+			player.getName().getString(),
+			event.targetX,
+			event.targetY,
+			event.targetZ
+		);
 	}
 
 	private TomorrowYouState.ActiveEvent createEvent(ServerPlayer player) {
@@ -106,6 +165,11 @@ public final class TomorrowYouManager {
 		event.targetY = target.getY();
 		event.targetZ = target.getZ();
 		event.createdAt = world.getGameTime();
+		event.createdDay = world.getGameTime() / 24000L;
+		event.firstVisitDone = false;
+		event.tomorrowBranchResolved = false;
+		event.resolvedOutcome = "pending";
+
 		event.playerNameAtCreation = player.getName().getString();
 		event.mainHandItem = itemId(player.getMainHandItem().getItem());
 		event.offHandItem = itemId(player.getOffhandItem().getItem());
@@ -132,10 +196,7 @@ public final class TomorrowYouManager {
 			return;
 		}
 		if (player.isDeadOrDying()) {
-			data.activeEvent = null;
-			attackCooldowns.remove(player.getUUID());
-			presenceSoundCooldowns.remove(player.getUUID());
-			state.save();
+			finalizeEncounter(player, data, event, "player_died", false);
 			return;
 		}
 
@@ -152,6 +213,15 @@ public final class TomorrowYouManager {
 		}
 
 		BlockPos targetPos = new BlockPos(event.targetX, event.targetY, event.targetZ);
+		if (!event.firstVisitDone) {
+			handleFirstVisit(player, data, event, eventWorld, targetPos);
+			return;
+		}
+
+		handleTomorrowVisit(player, data, event, targetPos);
+	}
+
+	private void handleFirstVisit(ServerPlayer player, TomorrowYouState.PlayerTimelineData data, TomorrowYouState.ActiveEvent event, ServerLevel eventWorld, BlockPos targetPos) {
 		double distToTarget = player.position().distanceTo(Vec3.atCenterOf(targetPos));
 		if (distToTarget <= config.spawnRadius) {
 			ensureEchoSpawned(eventWorld, targetPos, event);
@@ -165,12 +235,13 @@ public final class TomorrowYouManager {
 		double distanceToEcho = player.position().distanceTo(echo.position());
 		if (distanceToEcho <= config.vanishRadius) {
 			eventWorld.sendParticles(ParticleTypes.SMOKE, echo.getX(), echo.getY(0.6D), echo.getZ(), 40, 0.4D, 0.8D, 0.4D, 0.02D);
-			player.playSound(SoundEvents.ENDERMAN_TELEPORT, 0.8F, 0.9F);
-			player.playSound(SoundEvents.ITEM_PICKUP, 0.5F, 0.7F);
-			giveOrDrop(player, createEndingNote(event.frozenInventory));
+			playForPlayer(player, SoundEvents.ENDERMAN_TELEPORT, 1.0F, 0.95F);
+			giveOrDrop(player, createTomorrowWarningNote());
+
 			echo.discard();
-			data.activeEvent = null;
-			data.completedEncounters += 1;
+			event.echoEntityUuid = null;
+			event.firstVisitDone = true;
+			event.resolvedOutcome = "first_visit_done";
 			attackCooldowns.remove(player.getUUID());
 			presenceSoundCooldowns.remove(player.getUUID());
 			state.save();
@@ -180,8 +251,8 @@ public final class TomorrowYouManager {
 		int pulseCooldown = presenceSoundCooldowns.getOrDefault(player.getUUID(), 0);
 		if (distanceToEcho <= config.attackRadius + 5) {
 			if (pulseCooldown <= 0) {
-				float pitch = 0.7F + (playerWorld.random.nextFloat() * 0.25F);
-				player.playSound(SoundEvents.WARDEN_HEARTBEAT, 0.55F, pitch);
+				float pitch = 0.7F + (eventWorld.random.nextFloat() * 0.25F);
+				playForPlayer(player, SoundEvents.WARDEN_HEARTBEAT, 1.0F, pitch);
 				presenceSoundCooldowns.put(player.getUUID(), 35);
 			} else {
 				presenceSoundCooldowns.put(player.getUUID(), pulseCooldown - 1);
@@ -196,14 +267,67 @@ public final class TomorrowYouManager {
 				int levelLoss = Math.min(config.xpLevelsPerHit, player.experienceLevel);
 				if (levelLoss > 0) {
 					player.giveExperienceLevels(-levelLoss);
-					player.playSound(SoundEvents.PLAYER_HURT_DROWN, 0.6F, 1.4F);
-					player.playSound(SoundEvents.WARDEN_HEARTBEAT, 0.7F, 0.6F);
+					playForPlayer(player, SoundEvents.PLAYER_HURT_DROWN, 1.0F, 1.2F);
+					playForPlayer(player, SoundEvents.WARDEN_HEARTBEAT, 1.0F, 0.65F);
 				}
 				attackCooldowns.put(player.getUUID(), config.attackCooldownTicks);
 			} else {
 				attackCooldowns.put(player.getUUID(), cooldown - 1);
 			}
 		}
+	}
+
+	private void handleTomorrowVisit(ServerPlayer player, TomorrowYouState.PlayerTimelineData data, TomorrowYouState.ActiveEvent event, BlockPos targetPos) {
+		long currentDay = player.level().getGameTime() / 24000L;
+
+		HardcoreUnique.LOGGER.info(
+				"[TomorrowYou] game tick tick={}",
+				player.level().getGameTime()
+		);
+
+		if (currentDay < event.createdDay + 1) {
+			return;
+		}
+
+		double distToTarget = player.position().distanceTo(Vec3.atCenterOf(targetPos));
+		if (distToTarget > config.tomorrowTriggerRadius) {
+			tomorrowProgressTicks.remove(player.getUUID());
+			tomorrowXpPulseCooldowns.remove(player.getUUID());
+			return;
+		}
+
+		int progress = tomorrowProgressTicks.getOrDefault(player.getUUID(), 0) + 1;
+		tomorrowProgressTicks.put(player.getUUID(), progress);
+
+		player.level().sendParticles(ParticleTypes.PORTAL, player.getX(), player.getY() + 0.8D, player.getZ(), 8, 0.35D, 0.6D, 0.35D, 0.03D);
+		if (progress % 20 == 0) {
+			playForPlayer(player, SoundEvents.WARDEN_HEARTBEAT, 1.0F, 0.75F);
+		}
+
+		int pulseCooldown = tomorrowXpPulseCooldowns.getOrDefault(player.getUUID(), 0);
+		if (pulseCooldown <= 0) {
+			int levelLoss = Math.min(config.tomorrowXpDrainPerPulse, player.experienceLevel);
+			if (levelLoss > 0) {
+				player.giveExperienceLevels(-levelLoss);
+				playForPlayer(player, SoundEvents.PLAYER_HURT_DROWN, 0.8F, 1.0F);
+			}
+			tomorrowXpPulseCooldowns.put(player.getUUID(), config.tomorrowXpPulseTicks);
+		} else {
+			tomorrowXpPulseCooldowns.put(player.getUUID(), pulseCooldown - 1);
+		}
+
+		if (progress < config.tomorrowBranchDurationTicks) {
+			return;
+		}
+
+		boolean gotCompass = player.level().random.nextDouble() <= config.compassRewardChance;
+		if (gotCompass) {
+			grantCompassArtifact(player, event, currentDay);
+		}
+
+		giveOrDrop(player, createAlreadyHereNote(gotCompass));
+		playForPlayer(player, SoundEvents.ENDERMAN_TELEPORT, 1.0F, 0.9F);
+		finalizeEncounter(player, data, event, gotCompass ? "tomorrow_branch_compass" : "tomorrow_branch_no_compass", gotCompass);
 	}
 
 	private void ensureEchoSpawned(ServerLevel world, BlockPos targetPos, TomorrowYouState.ActiveEvent event) {
@@ -215,6 +339,7 @@ public final class TomorrowYouManager {
 		if (echo == null) {
 			return;
 		}
+
 		echo.setPos(targetPos.getX() + 0.5D, targetPos.getY(), targetPos.getZ() + 0.5D);
 		echo.setCustomName(Component.literal(event.playerNameAtCreation + " (Эхо)").withStyle(ChatFormatting.DARK_AQUA));
 		echo.setCustomNameVisible(true);
@@ -222,8 +347,97 @@ public final class TomorrowYouManager {
 		echo.setInvulnerable(true);
 		equipEchoFromSnapshot(echo, event);
 		world.addFreshEntity(echo);
-		echo.playSound(SoundEvents.ENDERMAN_TELEPORT, 0.7F, 0.6F);
+		world.playSound(null, echo.getX(), echo.getY(), echo.getZ(), SoundEvents.ENDERMAN_TELEPORT, SoundSource.PLAYERS, 1.0F, 0.7F);
+
 		event.echoEntityUuid = echo.getUUID();
+		state.save();
+	}
+
+	private void grantCompassArtifact(ServerPlayer player, TomorrowYouState.ActiveEvent event, long issuedAtDay) {
+		ItemStack existing = findOwnedCompass(player);
+		if (!existing.isEmpty()) {
+			if (config.updateExistingCompass) {
+				applyCompassMeta(existing, player, event, issuedAtDay);
+				playForPlayer(player, SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0F, 0.8F);
+			}
+			return;
+		}
+
+		ItemStack compass = new ItemStack(Items.COMPASS);
+		applyCompassMeta(compass, player, event, issuedAtDay);
+		giveOrDrop(player, compass);
+		playForPlayer(player, SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0F, 0.8F);
+	}
+
+	private void applyCompassMeta(ItemStack compass, ServerPlayer player, TomorrowYouState.ActiveEvent event, long issuedAtDay) {
+		CustomData customData = compass.get(DataComponents.CUSTOM_DATA);
+		CompoundTag tag = customData == null ? new CompoundTag() : customData.copyTag();
+
+		String previousArtifactId = tag.getStringOr(TAG_ARTIFACT_ID, "");
+		tag.putBoolean(TAG_UNIQUE, true);
+		tag.putString(TAG_OWNER_UUID, player.getUUID().toString());
+		tag.putString(TAG_OWNER_NAME, player.getName().getString());
+		tag.putLong(TAG_ISSUED_AT_GAME_TIME, player.level().getGameTime());
+		tag.putLong(TAG_ISSUED_AT_DAY, issuedAtDay);
+		tag.putString(TAG_ARTIFACT_ID, previousArtifactId.isEmpty() ? UUID.randomUUID().toString() : previousArtifactId);
+		compass.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+
+		compass.set(DataComponents.CUSTOM_NAME, Component.literal(COMPASS_TITLE).withStyle(ChatFormatting.AQUA));
+		List<Component> lore = new ArrayList<>();
+		lore.add(Component.literal("Владелец: " + player.getName().getString()).withStyle(ChatFormatting.GRAY));
+		lore.add(Component.literal("День выдачи: " + issuedAtDay).withStyle(ChatFormatting.DARK_GRAY));
+		lore.add(Component.literal("Точка эха: " + event.targetX + " " + event.targetY + " " + event.targetZ).withStyle(ChatFormatting.DARK_GRAY));
+		compass.set(DataComponents.LORE, new ItemLore(lore));
+	}
+
+	private ItemStack findOwnedCompass(ServerPlayer player) {
+		String ownerUuid = player.getUUID().toString();
+		for (ItemStack stack : player.getInventory().getNonEquipmentItems()) {
+			if (isOwnedCompass(stack, ownerUuid)) {
+				return stack;
+			}
+		}
+		if (isOwnedCompass(player.getItemBySlot(EquipmentSlot.OFFHAND), ownerUuid)) {
+			return player.getItemBySlot(EquipmentSlot.OFFHAND);
+		}
+		return ItemStack.EMPTY;
+	}
+
+	private boolean isOwnedCompass(ItemStack stack, String ownerUuid) {
+		if (stack.isEmpty() || stack.getItem() != Items.COMPASS) {
+			return false;
+		}
+
+		CustomData customData = stack.get(DataComponents.CUSTOM_DATA);
+		if (customData == null) {
+			return false;
+		}
+		CompoundTag tag = customData.copyTag();
+		return tag.getBooleanOr(TAG_UNIQUE, false) && ownerUuid.equals(tag.getStringOr(TAG_OWNER_UUID, ""));
+	}
+
+	private void finalizeEncounter(ServerPlayer player, TomorrowYouState.PlayerTimelineData data, TomorrowYouState.ActiveEvent event, String outcome, boolean gotCompass) {
+		event.tomorrowBranchResolved = true;
+		event.resolvedOutcome = outcome;
+
+		TomorrowYouState.EncounterRecord record = new TomorrowYouState.EncounterRecord();
+		record.worldKey = event.worldKey;
+		record.x = event.targetX;
+		record.y = event.targetY;
+		record.z = event.targetZ;
+		record.createdDay = event.createdDay;
+		record.resolvedDay = player.level().getGameTime() / 24000L;
+		record.outcome = outcome;
+		record.gotCompass = gotCompass;
+		state.addHistory(player.getUUID(), record);
+
+		data.completedEncounters += 1;
+		data.activeEvent = null;
+
+		attackCooldowns.remove(player.getUUID());
+		presenceSoundCooldowns.remove(player.getUUID());
+		tomorrowProgressTicks.remove(player.getUUID());
+		tomorrowXpPulseCooldowns.remove(player.getUUID());
 		state.save();
 	}
 
@@ -236,6 +450,11 @@ public final class TomorrowYouManager {
 			return armorStand;
 		}
 		return null;
+	}
+
+	private void playForPlayer(ServerPlayer player, net.minecraft.sounds.SoundEvent sound, float volume, float pitch) {
+		ServerLevel world = player.level();
+		world.playSound(null, player.getX(), player.getY(), player.getZ(), sound, SoundSource.PLAYERS, volume, pitch);
 	}
 
 	private void equipEchoFromSnapshot(ArmorStand echo, TomorrowYouState.ActiveEvent event) {
@@ -258,7 +477,7 @@ public final class TomorrowYouManager {
 
 	private ItemStack createCoordinatesNote(int x, int y, int z) {
 		ItemStack stack = new ItemStack(Items.PAPER);
-		stack.set(DataComponents.CUSTOM_NAME, Component.literal("Странная записка"));
+		stack.set(DataComponents.CUSTOM_NAME, Component.literal(NOTE_TITLE).withStyle(ChatFormatting.GOLD));
 		List<Component> lines = new ArrayList<>();
 		lines.add(Component.literal("Координаты: " + x + " " + y + " " + z).withStyle(ChatFormatting.GRAY));
 		lines.add(Component.literal("Подпись: твоей рукой.").withStyle(ChatFormatting.DARK_GRAY));
@@ -266,16 +485,25 @@ public final class TomorrowYouManager {
 		return stack;
 	}
 
-	private ItemStack createEndingNote(List<String> frozenInventory) {
+	private ItemStack createTomorrowWarningNote() {
 		ItemStack stack = new ItemStack(Items.PAPER);
-		String phrase = ENDING_LINES.get((int) (Math.random() * ENDING_LINES.size()));
-		stack.set(DataComponents.CUSTOM_NAME, Component.literal(phrase).withStyle(ChatFormatting.LIGHT_PURPLE));
+		stack.set(DataComponents.CUSTOM_NAME, Component.literal(NOTE_TITLE).withStyle(ChatFormatting.DARK_PURPLE));
 		List<Component> lines = new ArrayList<>();
-		if (!frozenInventory.isEmpty()) {
-			lines.add(Component.literal("Эхо помнит:").withStyle(ChatFormatting.GRAY));
-			for (int i = 0; i < Math.min(4, frozenInventory.size()); i++) {
-				lines.add(Component.literal(frozenInventory.get(i)).withStyle(ChatFormatting.DARK_GRAY));
-			}
+		lines.add(Component.literal("Не ходи сюда завтра.").withStyle(ChatFormatting.LIGHT_PURPLE));
+		lines.add(Component.literal("Но если придешь — время ответит.").withStyle(ChatFormatting.DARK_GRAY));
+		stack.set(DataComponents.LORE, new ItemLore(lines));
+		return stack;
+	}
+
+	private ItemStack createAlreadyHereNote(boolean gotCompass) {
+		ItemStack stack = new ItemStack(Items.PAPER);
+		stack.set(DataComponents.CUSTOM_NAME, Component.literal(NOTE_TITLE).withStyle(ChatFormatting.DARK_PURPLE));
+		List<Component> lines = new ArrayList<>();
+		lines.add(Component.literal("Ты уже был здесь.").withStyle(ChatFormatting.LIGHT_PURPLE));
+		if (gotCompass) {
+			lines.add(Component.literal("Эхо оставило тебе ориентир.").withStyle(ChatFormatting.GRAY));
+		} else {
+			lines.add(Component.literal("В этот раз эхо взяло больше, чем отдало.").withStyle(ChatFormatting.GRAY));
 		}
 		stack.set(DataComponents.LORE, new ItemLore(lines));
 		return stack;

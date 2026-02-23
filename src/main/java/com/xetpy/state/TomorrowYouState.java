@@ -55,6 +55,11 @@ public class TomorrowYouState {
 		data.activeEvent = null;
 	}
 
+	public synchronized void addHistory(UUID playerId, EncounterRecord record) {
+		PlayerTimelineData data = getOrCreatePlayerData(playerId);
+		data.history.add(record);
+	}
+
 	private SerializableState toSerializable() {
 		SerializableState serializableState = new SerializableState();
 		for (Map.Entry<UUID, PlayerTimelineData> entry : players.entrySet()) {
@@ -62,6 +67,9 @@ public class TomorrowYouState {
 			serializablePlayerData.playerId = entry.getKey().toString();
 			serializablePlayerData.completedEncounters = entry.getValue().completedEncounters;
 			serializablePlayerData.lastTriggerGameTime = entry.getValue().lastTriggerGameTime;
+			for (EncounterRecord historyRecord : entry.getValue().history) {
+				serializablePlayerData.history.add(historyRecord.copy());
+			}
 			if (entry.getValue().activeEvent != null) {
 				serializablePlayerData.activeEvent = entry.getValue().activeEvent.copy();
 			}
@@ -89,6 +97,11 @@ public class TomorrowYouState {
 			PlayerTimelineData playerData = new PlayerTimelineData();
 			playerData.completedEncounters = Math.max(0, serializablePlayerData.completedEncounters);
 			playerData.lastTriggerGameTime = serializablePlayerData.lastTriggerGameTime;
+			if (serializablePlayerData.history != null) {
+				for (EncounterRecord historyRecord : serializablePlayerData.history) {
+					playerData.history.add(historyRecord.copy());
+				}
+			}
 			if (serializablePlayerData.activeEvent != null) {
 				playerData.activeEvent = serializablePlayerData.activeEvent.copy();
 			}
@@ -101,6 +114,7 @@ public class TomorrowYouState {
 		public int completedEncounters;
 		public long lastTriggerGameTime = Long.MIN_VALUE;
 		public ActiveEvent activeEvent;
+		public List<EncounterRecord> history = new ArrayList<>();
 	}
 
 	public static final class ActiveEvent {
@@ -109,6 +123,10 @@ public class TomorrowYouState {
 		public int targetY = 64;
 		public int targetZ;
 		public long createdAt;
+		public long createdDay;
+		public boolean firstVisitDone;
+		public boolean tomorrowBranchResolved;
+		public String resolvedOutcome = "pending";
 		public UUID echoEntityUuid;
 		public String playerNameAtCreation = "Unknown";
 		public String mainHandItem = "minecraft:air";
@@ -128,6 +146,10 @@ public class TomorrowYouState {
 			copy.targetY = targetY;
 			copy.targetZ = targetZ;
 			copy.createdAt = createdAt;
+			copy.createdDay = createdDay;
+			copy.firstVisitDone = firstVisitDone;
+			copy.tomorrowBranchResolved = tomorrowBranchResolved;
+			copy.resolvedOutcome = resolvedOutcome;
 			copy.echoEntityUuid = echoEntityUuid;
 			copy.playerNameAtCreation = playerNameAtCreation;
 			copy.mainHandItem = mainHandItem;
@@ -143,6 +165,30 @@ public class TomorrowYouState {
 		}
 	}
 
+	public static final class EncounterRecord {
+		public String worldKey = "minecraft:overworld";
+		public int x;
+		public int y;
+		public int z;
+		public long createdDay;
+		public long resolvedDay;
+		public String outcome = "unknown";
+		public boolean gotCompass;
+
+		private EncounterRecord copy() {
+			EncounterRecord copy = new EncounterRecord();
+			copy.worldKey = worldKey;
+			copy.x = x;
+			copy.y = y;
+			copy.z = z;
+			copy.createdDay = createdDay;
+			copy.resolvedDay = resolvedDay;
+			copy.outcome = outcome;
+			copy.gotCompass = gotCompass;
+			return copy;
+		}
+	}
+
 	private static final class SerializableState {
 		List<SerializablePlayerData> players = new ArrayList<>();
 	}
@@ -152,5 +198,6 @@ public class TomorrowYouState {
 		int completedEncounters;
 		long lastTriggerGameTime = Long.MIN_VALUE;
 		ActiveEvent activeEvent;
+		List<EncounterRecord> history = new ArrayList<>();
 	}
 }

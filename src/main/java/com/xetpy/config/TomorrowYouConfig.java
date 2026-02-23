@@ -24,6 +24,13 @@ public final class TomorrowYouConfig {
 	public int attackRadius = 12;
 	public int attackCooldownTicks = 30;
 	public int xpLevelsPerHit = 1;
+	public int tomorrowTriggerRadius = 5;
+	public int tomorrowBranchDurationTicks = 120;
+	public int tomorrowXpPulseTicks = 20;
+	public int tomorrowXpDrainPerPulse = 1;
+	public double compassRewardChance = 1.0D;
+	public boolean updateExistingCompass = true;
+	public boolean debugVerboseLogs = false;
 	public int maxEncountersPerPlayer = 1;
 	public int cooldownMinutes = 120;
 	public boolean debugForceEvent = false;
@@ -68,6 +75,11 @@ public final class TomorrowYouConfig {
 		attackRadius = Math.max(vanishRadius + 1, attackRadius);
 		attackCooldownTicks = Math.max(10, attackCooldownTicks);
 		xpLevelsPerHit = Math.max(1, xpLevelsPerHit);
+		tomorrowTriggerRadius = Math.max(2, tomorrowTriggerRadius);
+		tomorrowBranchDurationTicks = Math.max(40, tomorrowBranchDurationTicks);
+		tomorrowXpPulseTicks = Math.max(5, tomorrowXpPulseTicks);
+		tomorrowXpDrainPerPulse = Math.max(1, tomorrowXpDrainPerPulse);
+		compassRewardChance = clamp(compassRewardChance, 0.0D, 1.0D);
 		maxEncountersPerPlayer = Math.max(1, maxEncountersPerPlayer);
 		cooldownMinutes = Math.max(1, cooldownMinutes);
 	}
